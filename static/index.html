@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Netwatch</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* layout: full-bleed command console — graph canvas left, instrument column right, event ticker footer */
+:root{
+  --bg:#05080f; --bg2:#0a1020; --panel:#0c1526; --line:#16263f;
+  --fg:#d6e4f5; --fg2:#7f93b3; --fg3:#4a5d7d;
+  --cyan:#36f1ff; --cyan2:#0fa6b8; --amber:#ffb13b; --red:#ff4f6d; --green:#3dffb0;
+  --display:'Orbitron',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 var(--mono);
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:48px 48px;background-position:center;position:relative;overflow:hidden}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;
+  background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(0,0,0,.14) 3px 4px);mix-blend-mode:multiply}
+#app{height:100%;display:grid;grid-template-rows:auto 1fr auto;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px;gap:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px}
+.brand{display:flex;align-items:baseline;gap:12px}
+.brand h1{font:700 20px/1 var(--display);letter-spacing:.18em;margin:0;color:var(--cyan);text-shadow:0 0 18px rgba(54,241,255,.55)}
+.brand span{color:var(--fg);font-size:13px;letter-spacing:.08em}.brand span.dim{color:var(--fg3);font-size:12px}
+.status{display:flex;align-items:center;gap:18px;font-size:12px;color:var(--fg2);letter-spacing:.06em;text-transform:uppercase}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);display:inline-block;margin-right:6px;animation:pulse 2s infinite}
+.dot.off{background:var(--red);box-shadow:0 0 10px var(--red);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:12px;min-height:0}
+.stage{position:relative;min-width:0;border:1px solid var(--line);background:radial-gradient(ellipse at center,#0b1830 0%,var(--bg) 70%);overflow:hidden}
+.stage canvas{width:100%;height:100%;display:block}
+.corner{position:absolute;width:14px;height:14px;border-color:var(--cyan2);border-style:solid;border-width:0}
+.corner.tl{top:6px;left:6px;border-top-width:2px;border-left-width:2px}
+.corner.tr{top:6px;right:6px;border-top-width:2px;border-right-width:2px}
+.corner.bl{bottom:6px;left:6px;border-bottom-width:2px;border-left-width:2px}
+.corner.br{bottom:6px;right:6px;border-bottom-width:2px;border-right-width:2px}
+.stage .hud{position:absolute;left:14px;top:12px;font-size:11px;color:var(--fg2);letter-spacing:.1em;text-transform:uppercase;pointer-events:none}
+.stage .hud b{color:var(--cyan);font-weight:500}
+#tip{position:absolute;pointer-events:none;background:rgba(5,8,15,.92);border:1px solid var(--cyan2);padding:8px 10px;font-size:11px;line-height:1.5;display:none;z-index:3;max-width:220px}
+#tip b{color:var(--cyan);font-family:var(--display);font-size:11px;letter-spacing:.06em}
+aside{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.tile{background:var(--panel);border:1px solid var(--line);padding:10px 12px;position:relative}
+.tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--cyan2)}
+.tile.warn::before{background:var(--amber)}
+.tile .l{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg2)}
+.tile .v{font:500 26px/1.1 var(--display);margin-top:4px;color:var(--fg);font-variant-numeric:tabular-nums}
+.tile.accent .v{color:var(--cyan);text-shadow:0 0 14px rgba(54,241,255,.45)}
+.tile.warn .v{color:var(--amber)}
+.list{background:var(--panel);border:1px solid var(--line);flex:1;min-height:0;display:flex;flex-direction:column}
+.list h2{margin:0;padding:8px 12px;font:500 11px var(--display);letter-spacing:.16em;text-transform:uppercase;color:var(--fg2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.list h2 span{color:var(--fg3);font-family:var(--mono);letter-spacing:0}
+.rows{overflow:auto;flex:1;min-height:0}
+.row{display:grid;grid-template-columns:8px minmax(0,1fr) 110px 54px;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .2s;font-variant-numeric:tabular-nums}
+.row:hover,.row.sel{background:rgba(54,241,255,.06)}
+.row .s{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.row.stale .s{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.row.stale{color:var(--fg2)}
+.row .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .n small{display:block;color:var(--fg3);font-size:11px}
+.row .ip{color:var(--fg2);font-size:12px}
+.row .lat{text-align:right;font-size:12px;color:var(--fg2)}
+.row.new{animation:flash 10s ease-out}
+@keyframes flash{0%{background:rgba(54,241,255,.35)}100%{background:transparent}}
+.badge{font-size:9px;letter-spacing:.1em;border:1px solid var(--cyan);color:var(--cyan);padding:0 4px;margin-left:6px;vertical-align:1px}
+footer{display:flex;gap:16px;align-items:center;border-top:1px solid var(--line);padding-top:8px;font-size:11px;color:var(--fg2);min-width:0}
+footer .lbl{font:500 10px var(--display);letter-spacing:.16em;color:var(--fg3);white-space:nowrap}
+#log{display:flex;gap:28px;overflow:hidden;white-space:nowrap;min-width:0;flex:1;mask-image:linear-gradient(90deg,#000 85%,transparent)}
+#log span{color:var(--fg2)}#log span b{font-weight:500;color:var(--cyan)}#log span.left b{color:var(--red)}#log span.ret b{color:var(--green)}
+#log span time{color:var(--fg3);margin-right:6px}
+@media (max-width:860px){body{overflow:auto}#app{height:auto}main{grid-template-columns:1fr}.stage{height:360px}.rows{max-height:320px}}
+@media (prefers-reduced-motion:reduce){.dot,.row.new{animation:none}}
+</style>
+</head>
+<body>
+
+
+<div id="app">
+<header>
+  <div class="brand"><h1>NETWATCH</h1><span id="ssid">—</span><span id="subnet" class="dim">—</span></div>
+  <div class="status"><span><i class="dot" id="dot"></i><span id="link">connecting</span></span><span id="scan">scan #0</span><span id="clock">--:--:--</span></div>
+</header>
+<main>
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+    <div class="hud">topology · <b id="hudn">0</b> nodes · sweep <b id="hudt">—</b>s</div>
+    <div id="tip"></div>
+  </div>
+  <aside>
+    <div class="tiles">
+      <div class="tile accent"><div class="l">Active</div><div class="v" id="tActive">0</div></div>
+      <div class="tile"><div class="l">New this session</div><div class="v" id="tNew">0</div></div>
+      <div class="tile warn"><div class="l">Stale</div><div class="v" id="tStale">0</div></div>
+      <div class="tile"><div class="l">Median latency</div><div class="v" id="tLat">—</div></div>
+    </div>
+    <div class="list"><h2>Devices <span id="count">0</span></h2><div class="rows" id="rows"></div></div>
+  </aside>
+</main>
+<footer><span class="lbl">EVENTS</span><div id="log"></div></footer>
+</div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const devices = new Map();      // mac -> device
+const nodes = new Map();        // mac -> render node
+const particles = [];
+let gateway = null, selected = null, sessionStart = Date.now()/1000, newCount = 0, scanNo = 0, lastTook = null;
+const seen = new Set();
+
+// ---------- data ----------
+function upsert(d, evt){
+  const prev = devices.get(d.mac);
+  devices.set(d.mac, d);
+  if(!prev){
+    if(!seen.has(d.mac) && d.first_seen > sessionStart + 2){ newCount++; d._new = Date.now(); log(`<b>${name(d)}</b> joined · ${d.ip}`); }
+    seen.add(d.mac);
+    nodes.set(d.mac, {mac:d.mac, a:Math.random()*Math.PI*2, r:0, tr:0, spin:(Math.random()-.5)*.0006, glow:1, born:performance.now()});
+  } else if(evt==='updated'){
+    if(d.status==='active' && prev.status!=='active') log(`<b>${name(d)}</b> back online`,'ret');
+    if(d.status==='stale' && prev.status!=='stale') log(`<b>${name(d)}</b> went quiet`);
+    if(d.status==='active') pulse(d.mac);
+  }
+  render();
+}
+function remove(mac){ const d=devices.get(mac); if(d) log(`<b>${name(d)}</b> left the network`,'left'); devices.delete(mac); nodes.delete(mac); render(); }
+const name = d => d.hostname || (d.vendor && d.vendor!=='Unknown' ? d.vendor : null) || d.ip || d.mac;
+function log(html,cls=''){ const t=new Date().toTimeString().slice(0,8); const s=document.createElement('span'); s.className=cls; s.innerHTML=`<time>${t}</time>${html}`; $('log').prepend(s); while($('log').children.length>8) $('log').lastChild.remove(); }
+function pulse(mac){ const n=nodes.get(mac); if(n){ n.glow=1; particles.push({mac,t:0,speed:.012+Math.random()*.01}); } }
+
+// ---------- table + tiles ----------
+function render(){
+  const list=[...devices.values()].sort((a,b)=>(b.is_gateway-a.is_gateway)||(a.status>b.status?1:-1)||ipNum(a.ip)-ipNum(b.ip));
+  const act=list.filter(d=>d.status==='active').length, stale=list.length-act;
+  const lats=list.map(d=>d.latency).filter(x=>x!=null).sort((a,b)=>a-b);
+  $('tActive').textContent=act; $('tStale').textContent=stale; $('tNew').textContent=newCount;
+  $('tLat').textContent=lats.length?lats[lats.length>>1].toFixed(1)+'ms':'—';
+  $('count').textContent=list.length; $('hudn').textContent=list.length;
+  const rows=$('rows'); const keep=new Set();
+  list.forEach((d,i)=>{
+    keep.add(d.mac);
+    let el=rows.querySelector(`[data-mac="${d.mac}"]`);
+    if(!el){ el=document.createElement('div'); el.dataset.mac=d.mac; el.onclick=()=>select(d.mac); el.innerHTML='<div class="s"></div><div class="n"></div><div class="ip"></div><div class="lat"></div>'; if(d._new) el.classList.add('new'); }
+    el.className='row'+(d.status==='stale'?' stale':'')+(selected===d.mac?' sel':'')+(d._new&&Date.now()-d._new<10000?' new':'');
+    el.querySelector('.n').innerHTML=`${esc(d.hostname||(d.vendor&&d.vendor!=='Unknown'?d.vendor:d.ip))}${d.is_gateway?'<span class="badge">GATEWAY</span>':''}${d._new&&Date.now()-d._new<60000?'<span class="badge">NEW</span>':''}<small>${esc(d.vendor||'')} · ${d.mac}</small>`;
+    el.querySelector('.ip').textContent=d.ip; el.querySelector('.lat').textContent=d.latency!=null?d.latency.toFixed(1)+'ms':'—';
+    if(rows.children[i]!==el) rows.insertBefore(el, rows.children[i]||null);
+  });
+  [...rows.children].forEach(el=>{ if(!keep.has(el.dataset.mac)) el.remove(); });
+}
+const ipNum = ip => (ip||'').split('.').reduce((a,b)=>a*256+(+b),0);
+const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function select(mac){ selected = selected===mac?null:mac; render(); }
+
+// ---------- canvas ----------
+const cv=$('c'), ctx=cv.getContext('2d'); let W=0,H=0,DPR=1,hover=null;
+function resize(){ const r=cv.getBoundingClientRect(); DPR=Math.min(devicePixelRatio||1,2); W=r.width; H=r.height; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+new ResizeObserver(resize).observe($('stage')); resize();
+cv.addEventListener('mousemove',e=>{ const r=cv.getBoundingClientRect(); const mx=e.clientX-r.left,my=e.clientY-r.top; hover=null; for(const n of nodes.values()){ if(n.x!=null&&Math.hypot(n.x-mx,n.y-my)<14){hover=n.mac;break;} } cv.style.cursor=hover?'pointer':'default'; const tip=$('tip'); if(hover){ const d=devices.get(hover); tip.style.display='block'; tip.style.left=(mx+14)+'px'; tip.style.top=(my+14)+'px'; tip.innerHTML=`<b>${esc(name(d))}</b><br>${d.ip}<br>${d.mac}<br>${esc(d.vendor||'')}${d.latency!=null?`<br>${d.latency.toFixed(1)} ms`:''}<br>seen ${ago(d.last_seen)}`; } else tip.style.display='none'; });
+cv.addEventListener('mouseleave',()=>{hover=null;$('tip').style.display='none'});
+cv.addEventListener('click',()=>{ if(hover) select(hover); });
+const ago = t => { const s=Math.max(0,Date.now()/1000-t); return s<5?'just now':s<60?Math.round(s)+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; };
+
+function frame(now){
+  requestAnimationFrame(frame);
+  ctx.clearRect(0,0,W,H);
+  const cx=W/2, cy=H/2, R=Math.min(W,H)*.33, Rin=R*.55;
+  // rings + sweep
+  ctx.lineWidth=1; ctx.setLineDash([3,6]);
+  for(const rr of [Rin,R,R*1.3]){ ctx.strokeStyle='rgba(54,241,255,.14)'; ctx.beginPath(); ctx.arc(cx,cy,rr,0,Math.PI*2); ctx.stroke(); }
+  ctx.setLineDash([]);
+  const sweep=(now/4000)%1*Math.PI*2;
+  const g=ctx.createConicGradient ? ctx.createConicGradient(sweep,cx,cy) : null;
+  if(g){ g.addColorStop(0,'rgba(54,241,255,0)'); g.addColorStop(.85,'rgba(54,241,255,0)'); g.addColorStop(1,'rgba(54,241,255,.16)'); ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R*1.3,0,Math.PI*2); ctx.fill(); }
+  // layout
+  const list=[...nodes.values()].filter(n=>!devices.get(n.mac)?.is_gateway);
+  const gw=[...nodes.values()].find(n=>devices.get(n.mac)?.is_gateway);
+  list.sort((a,b)=>ipNum(devices.get(a.mac).ip)-ipNum(devices.get(b.mac).ip));
+  list.forEach((n,i)=>{ const d=devices.get(n.mac); const target=(i/list.length)*Math.PI*2-Math.PI/2; n.a+= angDiff(target,n.a)*.08; n.tr= d.status==='stale'?R*1.3:R; n.r+=(n.tr-n.r)*.06; const life=Math.min(1,(now-n.born)/900); n.r*=life; n.x=cx+Math.cos(n.a)*n.r; n.y=cy+Math.sin(n.a)*n.r; n.glow*=.985; });
+  if(gw){ gw.x=cx; gw.y=cy; gw.r=0; }
+  // links
+  for(const n of list){ const d=devices.get(n.mac); const stale=d.status==='stale'; ctx.strokeStyle=stale?'rgba(255,177,59,.18)':`rgba(54,241,255,${.18+n.glow*.5})`; ctx.lineWidth=stale?1:1+n.glow*1.5; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(n.x,n.y); ctx.stroke(); }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; const n=nodes.get(p.mac); if(!n){particles.splice(i,1);continue;} p.t+=p.speed; if(p.t>1){particles.splice(i,1);continue;} const x=n.x+(cx-n.x)*p.t, y=n.y+(cy-n.y)*p.t; ctx.fillStyle='rgba(54,241,255,.9)'; ctx.shadowColor='#36f1ff'; ctx.shadowBlur=12; ctx.beginPath(); ctx.arc(x,y,2.2,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0; }
+  // nodes
+  for(const n of list){ const d=devices.get(n.mac); drawNode(n,d,now,false); }
+  if(gw) drawNode(gw,devices.get(gw.mac),now,true);
+  // center label
+  if(!gw && devices.size===0){ ctx.fillStyle='rgba(127,147,179,.7)'; ctx.font='500 12px Orbitron'; ctx.textAlign='center'; ctx.fillText('AWAITING FIRST SWEEP',cx,cy+4); }
+}
+function drawNode(n,d,now,isGw){
+  const stale=d.status==='stale', sel=selected===n.mac||hover===n.mac;
+  const col=stale?'255,177,59':'54,241,255';
+  const r=isGw?16:(sel?9:7);
+  const halo=isGw?22+Math.sin(now/600)*3:r+8+n.glow*10;
+  const grad=ctx.createRadialGradient(n.x,n.y,r*.3,n.x,n.y,halo);
+  grad.addColorStop(0,`rgba(${col},${isGw?.55:.35+n.glow*.4})`); grad.addColorStop(1,`rgba(${col},0)`);
+  ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(n.x,n.y,halo,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=stale?'#ffb13b':(isGw?'#36f1ff':'#bff9ff'); ctx.shadowColor=`rgb(${col})`; ctx.shadowBlur=isGw?24:14;
+  ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
+  if(isGw){ ctx.strokeStyle='rgba(54,241,255,.6)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(n.x,n.y,r+6,0,Math.PI*2); ctx.stroke(); }
+  if(sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(n.x,n.y,r+5,0,Math.PI*2); ctx.stroke(); }
+  if(isGw || n.r>10){
+    const lbl=(isGw?'GATEWAY':name(d)).slice(0,18);
+    ctx.font=(isGw?'500 10px':'400 11px')+(isGw?' Orbitron':' "IBM Plex Mono"'); ctx.textAlign='center';
+    ctx.fillStyle=stale?'rgba(255,177,59,.8)':(sel?'#fff':'rgba(214,228,245,.85)');
+    const ly=isGw?n.y+r+18:(n.y<H/2?n.y-r-8:n.y+r+15);
+    ctx.fillText(lbl,n.x,ly);
+    if(!isGw && d.latency!=null && n.r>10){ ctx.fillStyle='rgba(127,147,179,.8)'; ctx.font='10px "IBM Plex Mono"'; ctx.fillText(d.latency.toFixed(1)+'ms',n.x,ly+(n.y<H/2?-12:12)); }
+  }
+}
+const angDiff=(a,b)=>{ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; };
+requestAnimationFrame(frame);
+setInterval(()=>{ $('clock').textContent=new Date().toTimeString().slice(0,8); },1000);
+setInterval(render,5000);
+
+// ---------- transport ----------
+function handle(m){
+  if(m.type==='snapshot'){ gateway=m.gateway; $('subnet').textContent=gateway?gateway.replace(/\.\d+$/,'.0/24'):'local network'; $('ssid').textContent=m.network||'local network'; m.devices.forEach(d=>{ seen.add(d.mac); upsert(d,'snapshot'); }); if(m.devices.length) log(`snapshot · ${m.devices.length} devices`); }
+  else if(m.type==='joined') upsert(m.device,'joined');
+  else if(m.type==='updated') upsert(m.device,'updated');
+  else if(m.type==='left') remove(m.mac);
+  else if(m.type==='scan'){ scanNo=m.n; lastTook=m.took; $('scan').textContent='scan #'+scanNo; $('hudt').textContent=m.took; }
+}
+function connect(){
+  let ws; try{ ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'); }catch(e){ return demo(); }
+  let opened=false;
+  ws.onopen=()=>{ opened=true; $('dot').className='dot'; $('link').textContent='live'; };
+  ws.onmessage=e=>handle(JSON.parse(e.data));
+  ws.onclose=()=>{ if(!opened && !location.host.includes('localhost') && !location.host.startsWith('127.')) return demo(); $('dot').className='dot off'; $('link').textContent='reconnecting'; setTimeout(connect,2500); };
+  ws.onerror=()=>ws.close();
+}
+// Offline preview: simulated devices when no server is reachable (e.g. opened as a static page).
+function demo(){
+  $('dot').className='dot'; $('link').textContent='simulation';
+  const base=[['70:4F:57:00:00:01','192.168.1.1','router','TP-Link',true],['A4:83:E7:11:22:01','192.168.1.14','macbook-pro','Apple'],['F4:F5:D8:AA:BB:02','192.168.1.22','pixel-8','Google'],['F8:2F:A8:33:44:03','192.168.1.30','living-room-tv','Samsung'],['00:11:32:55:66:04','192.168.1.10','nas','Synology'],['3C:52:82:77:88:05','192.168.1.41','printer','HP'],['F0:81:73:99:AA:06','192.168.1.63','echo-dot','Amazon'],['B8:27:EB:BB:CC:07','192.168.1.70','raspberrypi','Raspberry Pi'],['00:17:88:DD:EE:08','192.168.1.80','hue-bridge','Philips Hue'],['DC:A9:04:FF:00:09','192.168.1.19','iphone','Apple'],['18:E8:29:12:34:0A','192.168.1.2','unifi-ap','Ubiquiti']];
+  const extra=[['24:6F:28:A1:C4:0C','192.168.1.57','esp32-a1c4','Espressif'],['3C:5A:B4:9F:00:0D','192.168.1.88','chromecast','Google'],['94:65:2D:00:11:0E','192.168.1.93',null,'OnePlus']];
+  const st={}; const now=()=>Date.now()/1000;
+  const mk=(m,ip,h,v,gw)=>{ st[m]=st[m]||{mac:m,ip,hostname:h,vendor:v,is_gateway:!!gw,first_seen:now(),last_seen:now(),status:'active',latency:null,history:[]}; return st[m]; };
+  handle({type:'snapshot',gateway:'192.168.1.1',network:'Demo Wi-Fi',scan:0,devices:base.map(b=>{const d=mk(...b); d.latency=+(1+Math.random()*12).toFixed(1); return d;})});
+  let n=0, k=0;
+  setInterval(()=>{
+    n++;
+    base.forEach(b=>{ if(Math.random()<.95||b[4]){ const d=mk(...b); const was=d.status; d.last_seen=now(); d.status='active'; d.latency=+(1+Math.random()*14).toFixed(1); handle({type:'updated',device:{...d},returned:was!=='active'}); } });
+    extra.forEach((b,i)=>{ const live = Math.sin(n/6+i*2)>0.2; if(live){ const fresh=!st[b[0]]; const d=mk(...b); d.last_seen=now(); d.status='active'; d.latency=+(3+Math.random()*30).toFixed(1); if(fresh){ d.first_seen=now(); handle({type:'joined',device:{...d}}); } else handle({type:'updated',device:{...d},returned:false}); } });
+    Object.values(st).forEach(d=>{ const gap=now()-d.last_seen; if(gap>40){ delete st[d.mac]; handle({type:'left',mac:d.mac}); } else if(gap>14&&d.status!=='stale'){ d.status='stale'; handle({type:'updated',device:{...d},returned:false}); } });
+    handle({type:'scan',n,took:(1+Math.random()*1.4).toFixed(2)});
+  },4000);
+}
+connect();
+})();
+</script>
+
+</body>
+</html>
