@@ -1,0 +1,37 @@
+# Netwatch with Docker Compose — Linux hosts (Raspberry Pi, home server, NAS).
+#
+#   docker compose up -d            # or: make up
+#   open http://<this-machine>:8008
+#
+# Settings can be overridden in a .env file next to this one (see .env.example).
+
+name: netwatch
+
+services:
+  netwatch:
+    build: .
+    image: netwatch:latest
+    container_name: netwatch
+    restart: unless-stopped
+
+    # Required for real scanning: share the host's network so ARP reaches the LAN.
+    # (With host networking, "ports:" is ignored — the dashboard binds directly on the host.)
+    network_mode: host
+
+    # Required for real scanning: raw sockets for ARP.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    environment:
+      NETWATCH_HOST: ${NETWATCH_HOST:-0.0.0.0}
+      NETWATCH_PORT: ${NETWATCH_PORT:-8008}
+      NETWATCH_IFACE: ${NETWATCH_IFACE:-}
+      NETWATCH_SUBNET: ${NETWATCH_SUBNET:-}
+      NETWATCH_DEMO: ${NETWATCH_DEMO:-}
+
+    volumes:
+      - netwatch-cache:/root/.cache   # keeps the vendor database between restarts
+
+volumes:
+  netwatch-cache:

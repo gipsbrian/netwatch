@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 import random
+import re
 import socket
 import sys
 import time
@@ -26,8 +27,8 @@ STALE_AFTER = 45            # seconds without a reply → "stale"
 GONE_AFTER = 180            # seconds without a reply → removed
 
 # ---------------------------------------------------------------- vendor lookup
-# Small built-in OUI table so the app works offline. Install `mac-vendor-lookup`
-# for the full database (it is used automatically when present).
+# Small built-in table so common vendors resolve offline. On first run the full
+# IEEE registry (~35k vendors) is downloaded once and cached; see ensure_vendor_db().
 OUI_MINI = {
     "A4:83:E7": "Apple", "F0:18:98": "Apple", "3C:22:FB": "Apple", "DC:A9:04": "Apple",
     "F4:F5:D8": "Google", "3C:5A:B4": "Google", "54:60:09": "Google",
@@ -44,44 +45,87 @@ OUI_MINI = {
     "00:D8:61": "Micro-Star", "2C:F0:5D": "Micro-Star", "00:1B:21": "Intel", "8C:EC:4B": "Dell",
 }
 
-try:
-    from mac_vendor_lookup import MacLookup  # type: ignore
-    _ML = MacLookup()
-except Exception:
-    _ML = None
-_VENDOR_DB_READY = False
+VENDOR_CACHE = Path(os.environ.get("NETWATCH_CACHE_DIR", Path.home() / ".cache" / "netwatch")) / "oui.tsv"
+VENDOR_SOURCES = (
+    "https://standards-oui.ieee.org/oui/oui.txt",                    # IEEE, authoritative
+    "https://www.wireshark.org/download/automated/data/manuf",       # Wireshark mirror, fallback
+)
+_VENDORS: dict[str, str] = {}
+_SUFFIXES = re.compile(
+    r"[ ,.]*(co\.?,? ?ltd\.?|corp(oration)?\.?|inc\.?|incorporated|llc|ltd\.?|limited|gmbh|s\.?a\.?|b\.?v\.?|ag|plc|oy|pte\.?)$",
+    re.I,
+)
 
 
-def ensure_vendor_db():
-    """Download the IEEE OUI list once (≈2 MB) so vendors resolve for every MAC."""
-    global _VENDOR_DB_READY
-    if not _ML or _VENDOR_DB_READY:
-        return False
+def _tidy(name: str) -> str:
+    """'Samsung Electronics Co.,Ltd' -> 'Samsung Electronics'."""
+    name = name.strip().strip('"')
+    for _ in range(3):
+        trimmed = _SUFFIXES.sub("", name).strip(" ,.")
+        if trimmed == name:
+            break
+        name = trimmed
+    return name
+
+
+def _parse_registry(text: str) -> dict[str, str]:
+    out = {}
+    ieee = re.compile(r"^([0-9A-F]{2})-([0-9A-F]{2})-([0-9A-F]{2})\s+\(hex\)\s+(.+)$", re.M)
+    for a, b, c, name in ieee.findall(text):
+        out[a + b + c] = _tidy(name)
+    if not out:  # Wireshark "manuf" format: 00:00:0C<TAB>Cisco<TAB>Cisco Systems, Inc
+        for line in text.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and re.fullmatch(r"[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}", parts[0]):
+                out[parts[0].replace(":", "").upper()] = _tidy(parts[2] if len(parts) > 2 and parts[2] else parts[1])
+    return out
+
+
+def _load_cache() -> bool:
     try:
-        _ML.lookup("A4:83:E7:00:00:00")  # cache already present?
-        _VENDOR_DB_READY = True
+        for line in VENDOR_CACHE.read_text(encoding="utf-8").splitlines():
+            prefix, _, name = line.partition("\t")
+            if name:
+                _VENDORS[prefix] = name
+        return bool(_VENDORS)
+    except OSError:
         return False
-    except Exception:
-        pass
-    try:
-        print("netwatch: downloading vendor database (one-time)…")
-        _ML.update_vendors()
-        _VENDOR_DB_READY = True
-        print("netwatch: vendor database ready")
+
+
+def ensure_vendor_db() -> bool:
+    """Load the vendor registry, downloading it once if needed. Returns True if newly loaded."""
+    if _VENDORS:
+        return False
+    if _load_cache():
+        print(f"netwatch: vendor database loaded ({len(_VENDORS):,} vendors)")
         return True
-    except Exception as e:
-        print("netwatch: vendor database download failed:", e, file=sys.stderr)
-        return False
+    import urllib.request
+    for url in VENDOR_SOURCES:
+        try:
+            print(f"netwatch: downloading vendor database (one-time) from {url.split('/')[2]}…")
+            req = urllib.request.Request(url, headers={"User-Agent": "netwatch/1.0 (+https://github.com/gipsbrian/netwatch)"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                parsed = _parse_registry(r.read().decode("utf-8", "replace"))
+            if len(parsed) < 1000:
+                raise ValueError(f"only {len(parsed)} entries parsed")
+            VENDOR_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            VENDOR_CACHE.write_text("\n".join(f"{k}\t{v}" for k, v in sorted(parsed.items())), encoding="utf-8")
+            _VENDORS.update(parsed)
+            print(f"netwatch: vendor database ready ({len(_VENDORS):,} vendors)")
+            return True
+        except Exception as e:
+            print(f"netwatch: couldn't fetch {url.split('/')[2]}: {e}", file=sys.stderr)
+    print("netwatch: using built-in vendor table; will retry next start", file=sys.stderr)
+    return False
 
 
 def vendor_for(mac: str) -> str:
     mac = mac.upper()
-    if _ML:
-        try:
-            return _ML.lookup(mac)
-        except Exception:
-            pass
-    return OUI_MINI.get(mac[:8], "Unknown")
+    first_octet = int(mac[:2], 16)
+    if first_octet & 0x02:  # locally administered bit: randomised "private" address (iOS, Android, Windows)
+        return "Private address"
+    key = mac.replace(":", "").replace("-", "")[:6]
+    return _VENDORS.get(key) or OUI_MINI.get(mac[:8], "Unknown")
 
 
 # ---------------------------------------------------------------- state
@@ -214,6 +258,7 @@ def resolve_host(ip: str) -> str | None:
 
 # ---------------------------------------------------------------- real scanning
 TUNNEL_PREFIXES = ("utun", "tun", "tap", "ppp", "ipsec", "wg", "tailscale", "zt")
+VIRTUAL_PREFIXES = ("lo", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "cni", "flannel", "cali", "awdl", "llw", "bridge", "anpi", "ap1")
 
 
 def _sh(cmd):
@@ -235,7 +280,7 @@ def detect_subnet(iface: str | None = None) -> tuple[str, str, str]:
             # Hardware ports in order: Wi-Fi first, then wired.
             ports = _sh(["networksetup", "-listallhardwareports"])
             devs = re.findall(r"Device:\s*(\S+)", ports)
-            candidates = [d for d in devs if not d.startswith(TUNNEL_PREFIXES)] or ["en0"]
+            candidates = [d for d in devs if not d.startswith(TUNNEL_PREFIXES + VIRTUAL_PREFIXES)] or ["en0"]
         for dev in candidates:
             ip = _sh(["ipconfig", "getifaddr", dev]).strip()
             if not ip:
@@ -247,30 +292,35 @@ def detect_subnet(iface: str | None = None) -> tuple[str, str, str]:
                 net = ipaddress.ip_interface(ip + "/24").network
             return str(net), gw or str(net[1]), dev
 
-    # Generic path (Linux/Windows): scapy's routing table, skipping tunnel interfaces.
+    # Generic path (Linux/Windows): follow scapy's routing table to the physical LAN.
     try:
         from scapy.all import conf  # type: ignore
-        routes = [r for r in conf.route.routes if r[3] and not str(r[3]).startswith(TUNNEL_PREFIXES)]
-        if iface:
-            routes = [r for r in routes if r[3] == iface]
-        best = None
-        for net, mask, gw, dev, addr, *_ in routes:
-            if addr in ("0.0.0.0", "127.0.0.1") or mask == 0:
-                continue
-            if ipaddress.ip_address(addr).is_private and (best is None or mask > best[1]):
-                best = (net, mask, gw, dev, addr)
-        if best:
-            net, mask, gw, dev, addr = best
+        skip = TUNNEL_PREFIXES + VIRTUAL_PREFIXES
+        usable = lambda dev: dev and (dev == iface if iface else not str(dev).startswith(skip))
+        routes = [r for r in conf.route.routes if usable(r[3])]
+        defaults = [r for r in routes if r[0] == 0 and r[1] == 0]
+        dev = iface or (defaults[0][3] if defaults else None)
+        connected = []
+        for net, mask, _gw, d, addr, *_ in routes:
             prefix = bin(mask).count("1")
-            if prefix < 22:
-                prefix = 24
-            cidr = str(ipaddress.ip_interface(f"{addr}/{prefix}").network)
-            gw_ip = conf.route.route("0.0.0.0")[2]
-            if gw == "0.0.0.0" or not ipaddress.ip_address(gw_ip) in ipaddress.ip_network(cidr):
-                gw_ip = str(ipaddress.ip_network(cidr)[1])
-            return cidr, gw_ip, dev
-    except Exception:
-        pass
+            if d != dev and dev is not None:
+                continue
+            if not (8 <= prefix <= 30) or addr in ("0.0.0.0", "127.0.0.1"):
+                continue
+            network = ipaddress.ip_network(f"{ipaddress.IPv4Address(net)}/{prefix}", strict=False)
+            if network.is_multicast or network.is_link_local:
+                continue
+            connected.append((prefix, network, d, addr))
+        if connected:
+            prefix, network, dev, addr = max(connected, key=lambda c: c[0])
+            if prefix < 22:  # don't sweep a huge range; narrow to the /24 around us
+                network = ipaddress.ip_interface(addr + "/24").network
+            gw = next((r[2] for r in defaults if r[3] == dev), None)
+            if not gw or ipaddress.ip_address(gw) not in network:
+                gw = str(network[1])
+            return str(network), gw, dev
+    except Exception as e:
+        print("netwatch: route detection failed, falling back:", e, file=sys.stderr)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
     local_ip = s.getsockname()[0]
@@ -285,7 +335,7 @@ async def refresh_vendors():
     if not updated:
         return
     for d in table.devices.values():
-        if d["vendor"] in ("Unknown", None):
+        if d["vendor"] in ("Unknown", None) or d["vendor"] in OUI_MINI.values():
             v = vendor_for(d["mac"])
             if v != d["vendor"]:
                 d["vendor"] = v
@@ -390,10 +440,17 @@ async def ws(sock: WebSocket):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--demo", action="store_true", help="simulate devices (no root needed)")
-    ap.add_argument("--port", type=int, default=8008)
-    ap.add_argument("--subnet", help="CIDR to scan, e.g. 192.168.0.0/24 (auto-detected if omitted)")
-    ap.add_argument("--iface", help="interface to scan on, e.g. en0 (auto-detected; skips VPN tunnels)")
+    env = os.environ.get
+    ap.add_argument("--demo", action="store_true", default=env("NETWATCH_DEMO", "").lower() in ("1", "true", "yes"),
+                    help="simulate devices (no root needed)  [env NETWATCH_DEMO]")
+    ap.add_argument("--host", default=env("NETWATCH_HOST", "127.0.0.1"),
+                    help="address to serve on; 0.0.0.0 to reach it from other devices  [env NETWATCH_HOST]")
+    ap.add_argument("--port", type=int, default=int(env("NETWATCH_PORT", "8008")),
+                    help="dashboard port  [env NETWATCH_PORT]")
+    ap.add_argument("--subnet", default=env("NETWATCH_SUBNET") or None,
+                    help="CIDR to scan, e.g. 192.168.0.0/24 (auto-detected if omitted)  [env NETWATCH_SUBNET]")
+    ap.add_argument("--iface", default=env("NETWATCH_IFACE") or None,
+                    help="interface to scan on, e.g. en0 (auto-detected; skips VPN tunnels)  [env NETWATCH_IFACE]")
     args = ap.parse_args()
 
     import uvicorn
@@ -417,8 +474,11 @@ def main():
 
     app.router.lifespan_context = lifespan
 
-    print(f"netwatch: open http://localhost:{args.port}")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    shown = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
+    print(f"netwatch: open http://{shown}:{args.port}")
+    if args.host == "0.0.0.0":
+        print("netwatch: listening on all interfaces — reachable from other devices on this network")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

@@ -15,3 +15,6 @@ Thumbs.db
 
 # Local runtime data
 *.log
+
+# Local settings
+.env

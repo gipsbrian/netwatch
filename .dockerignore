@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+docs
+*.md
+!README.md
+.env
+.DS_Store
+Makefile
+docker-compose.yml

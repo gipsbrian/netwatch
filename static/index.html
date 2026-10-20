@@ -130,7 +130,8 @@ function upsert(d, evt){
   render();
 }
 function remove(mac){ const d=devices.get(mac); if(d) log(`<b>${name(d)}</b> left the network`,'left'); devices.delete(mac); nodes.delete(mac); render(); }
-const name = d => d.hostname || (d.vendor && d.vendor!=='Unknown' ? d.vendor : null) || d.ip || d.mac;
+const realVendor = v => v && v!=='Unknown' && v!=='Private address' ? v : null;
+const name = d => d.hostname || realVendor(d.vendor) || d.ip || d.mac;
 function log(html,cls=''){ const t=new Date().toTimeString().slice(0,8); const s=document.createElement('span'); s.className=cls; s.innerHTML=`<time>${t}</time>${html}`; $('log').prepend(s); while($('log').children.length>8) $('log').lastChild.remove(); }
 function pulse(mac){ const n=nodes.get(mac); if(n){ n.glow=1; particles.push({mac,t:0,speed:.012+Math.random()*.01}); } }
 
@@ -148,7 +149,7 @@ function render(){
     let el=rows.querySelector(`[data-mac="${d.mac}"]`);
     if(!el){ el=document.createElement('div'); el.dataset.mac=d.mac; el.onclick=()=>select(d.mac); el.innerHTML='<div class="s"></div><div class="n"></div><div class="ip"></div><div class="lat"></div>'; if(d._new) el.classList.add('new'); }
     el.className='row'+(d.status==='stale'?' stale':'')+(selected===d.mac?' sel':'')+(d._new&&Date.now()-d._new<10000?' new':'');
-    el.querySelector('.n').innerHTML=`${esc(d.hostname||(d.vendor&&d.vendor!=='Unknown'?d.vendor:d.ip))}${d.is_gateway?'<span class="badge">GATEWAY</span>':''}${d._new&&Date.now()-d._new<60000?'<span class="badge">NEW</span>':''}<small>${esc(d.vendor||'')} · ${d.mac}</small>`;
+    el.querySelector('.n').innerHTML=`${esc(name(d))}${d.is_gateway?'<span class="badge">GATEWAY</span>':''}${d._new&&Date.now()-d._new<60000?'<span class="badge">NEW</span>':''}<small>${esc(d.vendor||'')} · ${d.mac}</small>`;
     el.querySelector('.ip').textContent=d.ip; el.querySelector('.lat').textContent=d.latency!=null?d.latency.toFixed(1)+'ms':'—';
     if(rows.children[i]!==el) rows.insertBefore(el, rows.children[i]||null);
   });
